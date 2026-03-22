@@ -512,6 +512,7 @@ def load_state(session_key):
 
 
 def save_state(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
