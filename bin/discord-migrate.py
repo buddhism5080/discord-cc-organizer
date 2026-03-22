@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
 import re
 import signal
 import subprocess
@@ -20,11 +19,11 @@ _watch_spec = importlib.util.spec_from_file_location('discord_watch', _watch_pat
 discord_watch = importlib.util.module_from_spec(_watch_spec)
 _watch_spec.loader.exec_module(discord_watch)
 
-CC_CONNECT_CONFIG = Path(os.environ.get('CC_CONNECT_CONFIG', '~/.cc-connect/config.toml')).expanduser()
-CC_CONNECT_LOG = Path(os.environ.get('CC_CONNECT_LOG', '~/.cc-connect/cc-connect.log')).expanduser()
-CC_CONNECT_BIN = os.environ.get('CC_CONNECT_BIN', 'cc-connect')
-CC_CONNECT_MATCH = os.environ.get('CC_CONNECT_MATCH', f'cc-connect --config {CC_CONNECT_CONFIG}')
-CC_CONNECT_START_CMD = os.environ.get('CC_CONNECT_START_CMD', '')
+CC_CONNECT_CONFIG = Path(discordctl.configured_env_get('CC_CONNECT_CONFIG', '~/.cc-connect/config.toml')).expanduser()
+CC_CONNECT_LOG = Path(discordctl.configured_env_get('CC_CONNECT_LOG', '~/.cc-connect/cc-connect.log')).expanduser()
+CC_CONNECT_BIN = discordctl.configured_env_get('CC_CONNECT_BIN', 'cc-connect')
+CC_CONNECT_MATCH = discordctl.configured_env_get('CC_CONNECT_MATCH', f'cc-connect --config {CC_CONNECT_CONFIG}')
+CC_CONNECT_START_CMD = discordctl.configured_env_get('CC_CONNECT_START_CMD', '')
 QUIET_WINDOW_SECS = 300
 
 

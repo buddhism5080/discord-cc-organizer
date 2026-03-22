@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
 import re
 import sys
 import time
@@ -13,9 +12,9 @@ import discordctl
 
 WATCH_STATE_DIR = discordctl.STATE_ROOT / "watcher"
 MIGRATION_REGISTRY_PATH = discordctl.MIGRATION_REGISTRY_PATH
-CC_CONNECT_DATA_DIR = Path(os.environ.get("CC_CONNECT_DATA_DIR", "~/.cc-connect")).expanduser()
-CC_CONNECT_SESSIONS_DIR = Path(os.environ.get("CC_CONNECT_SESSIONS_DIR", str(CC_CONNECT_DATA_DIR / "sessions"))).expanduser()
-CLAUDE_PROJECTS_DIR = Path(os.environ.get("CLAUDE_PROJECTS_DIR", "~/.claude/projects")).expanduser()
+CC_CONNECT_DATA_DIR = Path(discordctl.configured_env_get("CC_CONNECT_DATA_DIR", "~/.cc-connect")).expanduser()
+CC_CONNECT_SESSIONS_DIR = Path(discordctl.configured_env_get("CC_CONNECT_SESSIONS_DIR", str(CC_CONNECT_DATA_DIR / "sessions"))).expanduser()
+CLAUDE_PROJECTS_DIR = Path(discordctl.configured_env_get("CLAUDE_PROJECTS_DIR", "~/.claude/projects")).expanduser()
 CONTENT_RE = re.compile(r'"content"\s*:\s*"((?:\\.|[^"\\])*)"')
 
 

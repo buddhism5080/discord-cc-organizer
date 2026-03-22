@@ -16,17 +16,20 @@ It tells an agent to:
 
 - detect whether the current environment is the right one
 - refuse installation outside the intended workflow
-- auto-fill local paths and detectable config values
+- download the repository from GitHub and install it into the Claude skill area
+- auto-fill local paths and detectable config values from the current runtime environment
+- avoid depending on `.env` for agent installation
 - ask the user only for AI endpoint / API key / model confirmation
+- if needed, persist missing values via Claude local settings so they become environment variables
 
 ## Manual install outline
 
-1. Copy `.env.example` to `.env`
-2. Fill auto-detectable local paths
+1. Download or clone the repository
+2. Fill runtime environment variables or Claude local settings with the required values
 3. Set `DISCORD_BOT_TOKEN` or ensure `CC_CONNECT_CONFIG` can provide one
 4. Verify that the bot has the required Discord server permissions
 5. Optionally set LLM variables for title/summary generation
-6. Run the scripts from the repository root
+6. Run the scripts from the installed repository root
 
 ## Real install command
 
@@ -35,6 +38,8 @@ A real install orchestration entry now exists:
 ```bash
 python3 bin/discordctl.py install --json
 ```
+
+It is designed for agent-driven installation from a matching live environment. The agent should fetch the GitHub repository into the Claude skill area, then persist selected install-local non-secret `DISCORD_*` values via Claude local settings env instead of relying on `.env`.
 
 ## Permission check during agent install
 

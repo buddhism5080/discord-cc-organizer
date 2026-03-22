@@ -4,10 +4,14 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 try:
@@ -16,34 +20,90 @@ except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DOTENV_PATH = REPO_ROOT / ".env"
+CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+CLAUDE_LOCAL_SETTINGS_PATH = Path.home() / ".claude" / "settings.local.json"
+DEFAULT_INSTALL_REPO_ZIP_URL = "https://github.com/buddhism5080/discord-cc-organizer/archive/refs/heads/main.zip"
+DEFAULT_SKILL_INSTALL_DIR = Path.home() / ".claude" / "skills" / "discord-cc-organizer"
+INSTALL_PERSISTED_ENV_KEYS = (
+    "DISCORD_SKILL_ROOT",
+    "DISCORD_SKILL_STATE_DIR",
+    "DISCORD_API_BASE",
+)
 
 
-def load_dotenv_file(path):
+def load_json_file(path, default=None):
+    default = {} if default is None else default
     if not path.exists():
-        return
+        return default
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        return default
+
+
+def load_claude_settings_env():
+    merged = {}
+    for path in (CLAUDE_SETTINGS_PATH, CLAUDE_LOCAL_SETTINGS_PATH):
+        data = load_json_file(path, {})
+        env = data.get("env") if isinstance(data, dict) else None
+        if not isinstance(env, dict):
             continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
+        for key, value in env.items():
+            if not isinstance(key, str):
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                merged[key] = str(value)
+    return merged
 
 
-load_dotenv_file(DOTENV_PATH)
+CLAUDE_SETTINGS_ENV = load_claude_settings_env()
 
-DISCORD_API_BASE = os.environ.get("DISCORD_API_BASE", "https://discord.com/api/v10")
-CC_CONNECT_CONFIG = Path(os.environ.get("CC_CONNECT_CONFIG", "~/.cc-connect/config.toml")).expanduser()
-CC_CONNECT_SESSIONS_DIR = Path(os.environ.get("CC_CONNECT_SESSIONS_DIR", "~/.cc-connect/sessions")).expanduser()
-SKILL_ROOT = Path(os.environ.get("DISCORD_SKILL_ROOT", str(REPO_ROOT))).expanduser()
-STATE_ROOT = Path(os.environ.get("DISCORD_SKILL_STATE_DIR", str(SKILL_ROOT / "state"))).expanduser()
+
+def configured_env_get(name, default=None):
+    value = os.environ.get(name)
+    if value not in (None, ""):
+        return value
+    value = CLAUDE_SETTINGS_ENV.get(name)
+    if value not in (None, ""):
+        return value
+    return default
+
+
+def write_claude_local_settings_env(updates, dry_run=False):
+    global CLAUDE_SETTINGS_ENV
+    data = load_json_file(CLAUDE_LOCAL_SETTINGS_PATH, {})
+    if not isinstance(data, dict):
+        data = {}
+    env = data.get("env")
+    if not isinstance(env, dict):
+        env = {}
+
+    changed = False
+    for key, value in updates.items():
+        if value in (None, ""):
+            continue
+        normalized = str(value)
+        if env.get(key) == normalized:
+            continue
+        env[key] = normalized
+        changed = True
+
+    if not changed:
+        return env
+
+    data["env"] = env
+    if not dry_run:
+        CLAUDE_LOCAL_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CLAUDE_LOCAL_SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        CLAUDE_SETTINGS_ENV = load_claude_settings_env()
+    return env
+
+
+DISCORD_API_BASE = configured_env_get("DISCORD_API_BASE", "https://discord.com/api/v10")
+CC_CONNECT_CONFIG = Path(configured_env_get("CC_CONNECT_CONFIG", "~/.cc-connect/config.toml")).expanduser()
+CC_CONNECT_SESSIONS_DIR = Path(configured_env_get("CC_CONNECT_SESSIONS_DIR", "~/.cc-connect/sessions")).expanduser()
+SKILL_ROOT = Path(configured_env_get("DISCORD_SKILL_ROOT", str(REPO_ROOT))).expanduser()
+STATE_ROOT = Path(configured_env_get("DISCORD_SKILL_STATE_DIR", str(SKILL_ROOT / "state"))).expanduser()
 AUTO_TITLE_STATE_DIR = STATE_ROOT / "auto-title"
 MIGRATION_REGISTRY_PATH = STATE_ROOT / "migration_registry.json"
 FRAMEWORK_REGISTRY_PATH = STATE_ROOT / "framework_registry.json"
@@ -81,18 +141,24 @@ def load_cc_config():
         return tomllib.load(f)
 
 
-def load_cc_token():
-    env_token = os.environ.get("DISCORD_BOT_TOKEN")
+def resolve_discord_token_with_source():
+    env_token = configured_env_get("DISCORD_BOT_TOKEN")
     if env_token:
-        return env_token
+        source = "environment" if os.environ.get("DISCORD_BOT_TOKEN") else "claude settings env"
+        return env_token, source
     data = load_cc_config()
     for project in data.get("projects", []):
         for platform in project.get("platforms", []):
             if platform.get("type") == "discord":
                 token = (platform.get("options") or {}).get("token")
                 if token:
-                    return token
+                    return token, "cc-connect config"
     raise DiscordSkillError("Discord bot token not found in cc-connect config")
+
+
+def load_cc_token():
+    token, _source = resolve_discord_token_with_source()
+    return token
 
 
 def api_request(method, path, token, payload=None):
@@ -189,8 +255,24 @@ def get_guild_member(guild_id, user_id, token):
     return api_request("GET", f"/guilds/{guild_id}/members/{user_id}", token)
 
 
+def list_guild_roles(guild_id, token):
+    return api_request("GET", f"/guilds/{guild_id}/roles", token)
+
+
+def guild_member_permissions(member, guild_id, token):
+    role_ids = set(member.get("roles") or [])
+    role_ids.add(str(guild_id))
+    permissions_value = 0
+    for role in list_guild_roles(guild_id, token):
+        role_id = role.get("id")
+        if role_id not in role_ids:
+            continue
+        permissions_value |= int(role.get("permissions") or 0)
+    return permissions_value
+
+
 def env_bool(name):
-    return (os.environ.get(name) or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    return (configured_env_get(name) or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def detect_install_environment():
@@ -209,41 +291,6 @@ def detect_install_environment():
         'cc_connect_sessions_exists': cc_connect_sessions_exists,
         'claude_root_exists': claude_root_exists,
     }
-
-
-def ensure_env_file(dry_run=False):
-    env_path = REPO_ROOT / '.env'
-    example_path = REPO_ROOT / '.env.example'
-    if env_path.exists():
-        return env_path
-    if dry_run:
-        return env_path
-    if not example_path.exists():
-        raise DiscordSkillError(f'Missing .env.example at {example_path}')
-    env_path.write_text(example_path.read_text(encoding='utf-8'), encoding='utf-8')
-    return env_path
-
-
-def parse_env_file(path):
-    data = {}
-    if not path.exists():
-        return data
-    for raw in path.read_text(encoding='utf-8').splitlines():
-        line = raw.strip()
-        if not line or line.startswith('#') or '=' not in line:
-            continue
-        key, value = line.split('=', 1)
-        data[key.strip()] = value.strip()
-    return data
-
-
-def write_env_file(path, updates, dry_run=False):
-    existing = parse_env_file(path)
-    merged = {**existing, **updates}
-    lines = [f'{k}={v}' for k, v in merged.items()]
-    if not dry_run:
-        path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-    return merged
 
 
 def list_active_guild_threads(guild_id, token):
@@ -339,9 +386,9 @@ def strip_prompt_noise(text):
 
 
 def openai_config():
-    base_url = os.environ.get("DISCORD_SKILL_LLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
-    api_key = os.environ.get("DISCORD_SKILL_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    model = os.environ.get("DISCORD_SKILL_LLM_MODEL") or os.environ.get("OPENAI_MODEL")
+    base_url = configured_env_get("DISCORD_SKILL_LLM_BASE_URL") or configured_env_get("OPENAI_BASE_URL")
+    api_key = configured_env_get("DISCORD_SKILL_LLM_API_KEY") or configured_env_get("OPENAI_API_KEY")
+    model = configured_env_get("DISCORD_SKILL_LLM_MODEL") or configured_env_get("OPENAI_MODEL")
     if base_url and api_key and model:
         return {"base_url": base_url.rstrip("/"), "api_key": api_key, "model": model}
     return None
@@ -953,7 +1000,7 @@ def cmd_permissions_check(args):
         raise DiscordSkillError('Could not infer guild_id from current Discord context')
     me = get_current_user(token)
     member = get_guild_member(guild_id, me.get('id'), token)
-    permissions_value = int(member.get('permissions') or 0)
+    permissions_value = guild_member_permissions(member, guild_id, token)
     missing = [name for name, bit in REQUIRED_PERMISSION_BITS.items() if not (permissions_value & bit)]
     oauth_permissions = sum(REQUIRED_PERMISSION_BITS.values())
     result = {
@@ -1518,13 +1565,104 @@ def cmd_migration_registry(args):
     print_result(result, args.json)
 
 
-def load_migrate_module():
+def load_migrate_module(skill_root=None):
     import importlib.util
-    migrate_path = SKILL_ROOT / 'bin' / 'discord-migrate.py'
+    migrate_root = Path(skill_root or SKILL_ROOT).expanduser()
+    migrate_path = migrate_root / 'bin' / 'discord-migrate.py'
     migrate_spec = importlib.util.spec_from_file_location('discord_migrate_runtime', migrate_path)
     migrate_mod = importlib.util.module_from_spec(migrate_spec)
     migrate_spec.loader.exec_module(migrate_mod)
     return migrate_mod
+
+
+def install_repo_from_github(install_dir=None, zip_url=None, dry_run=False):
+    install_dir = Path(install_dir or DEFAULT_SKILL_INSTALL_DIR).expanduser()
+    zip_url = zip_url or configured_env_get('DISCORD_SKILL_INSTALL_REPO_ZIP_URL', DEFAULT_INSTALL_REPO_ZIP_URL)
+    result = {
+        'install_dir': str(install_dir),
+        'zip_url': zip_url,
+        'performed': False,
+        'preserved_state': False,
+        'bin_path': str(install_dir / 'bin' / 'discordctl.py'),
+    }
+    if dry_run:
+        return result
+    with tempfile.TemporaryDirectory(prefix='discord-cc-organizer-') as tmp:
+        tmp_path = Path(tmp)
+        archive_path = tmp_path / 'repo.zip'
+        preserved_state_path = tmp_path / 'preserved-state'
+        urllib.request.urlretrieve(zip_url, archive_path)
+        with zipfile.ZipFile(archive_path) as zf:
+            zf.extractall(tmp_path)
+        extracted_roots = [p for p in tmp_path.iterdir() if p.is_dir() and p.name != '__MACOSX']
+        source_root = next((p for p in extracted_roots if (p / 'bin' / 'discordctl.py').exists()), None)
+        if source_root is None:
+            raise DiscordSkillError('Downloaded repository archive did not contain bin/discordctl.py')
+        install_dir.parent.mkdir(parents=True, exist_ok=True)
+        existing_state_path = install_dir / 'state'
+        if existing_state_path.exists():
+            shutil.copytree(existing_state_path, preserved_state_path)
+            result['preserved_state'] = True
+        if install_dir.exists():
+            shutil.rmtree(install_dir)
+        shutil.copytree(source_root, install_dir)
+        if preserved_state_path.exists():
+            target_state_path = install_dir / 'state'
+            if target_state_path.exists():
+                shutil.rmtree(target_state_path)
+            shutil.move(str(preserved_state_path), str(target_state_path))
+    result['performed'] = True
+    return result
+
+
+def detect_secret_sources(token_source=None):
+    if token_source is None:
+        try:
+            _token, token_source = resolve_discord_token_with_source()
+        except DiscordSkillError:
+            token_source = 'missing'
+
+    def source_for(primary, fallback=None):
+        if os.environ.get(primary) or (fallback and os.environ.get(fallback)):
+            return 'environment'
+        if CLAUDE_SETTINGS_ENV.get(primary) or (fallback and CLAUDE_SETTINGS_ENV.get(fallback)):
+            return 'claude settings env'
+        return 'missing'
+
+    return {
+        'DISCORD_BOT_TOKEN': token_source,
+        'DISCORD_SKILL_LLM_BASE_URL': source_for('DISCORD_SKILL_LLM_BASE_URL', 'OPENAI_BASE_URL'),
+        'DISCORD_SKILL_LLM_API_KEY': source_for('DISCORD_SKILL_LLM_API_KEY', 'OPENAI_API_KEY'),
+        'DISCORD_SKILL_LLM_MODEL': source_for('DISCORD_SKILL_LLM_MODEL', 'OPENAI_MODEL'),
+    }
+
+
+def collect_install_config(install_dir=None):
+    skill_root = Path(install_dir or configured_env_get('DISCORD_SKILL_ROOT', str(DEFAULT_SKILL_INSTALL_DIR))).expanduser()
+    state_root = Path(configured_env_get('DISCORD_SKILL_STATE_DIR', str(skill_root / 'state'))).expanduser()
+    cc_connect_config = Path(configured_env_get('CC_CONNECT_CONFIG', '~/.cc-connect/config.toml')).expanduser()
+    return {
+        'CC_CONNECT_CONFIG': str(cc_connect_config),
+        'CC_CONNECT_SESSIONS_DIR': str(Path(configured_env_get('CC_CONNECT_SESSIONS_DIR', '~/.cc-connect/sessions')).expanduser()),
+        'CC_CONNECT_DATA_DIR': str(Path(configured_env_get('CC_CONNECT_DATA_DIR', '~/.cc-connect')).expanduser()),
+        'CLAUDE_PROJECTS_DIR': str(Path(configured_env_get('CLAUDE_PROJECTS_DIR', '~/.claude/projects')).expanduser()),
+        'DISCORD_SKILL_ROOT': str(skill_root),
+        'DISCORD_SKILL_STATE_DIR': str(state_root),
+        'DISCORD_API_BASE': configured_env_get('DISCORD_API_BASE', 'https://discord.com/api/v10'),
+        'DISCORD_SKILL_INSTALL_REPO_ZIP_URL': configured_env_get('DISCORD_SKILL_INSTALL_REPO_ZIP_URL', DEFAULT_INSTALL_REPO_ZIP_URL),
+        'CC_CONNECT_LOG': configured_env_get('CC_CONNECT_LOG', str(Path('~/.cc-connect/cc-connect.log').expanduser())),
+        'CC_CONNECT_BIN': configured_env_get('CC_CONNECT_BIN', 'cc-connect'),
+        'CC_CONNECT_MATCH': configured_env_get('CC_CONNECT_MATCH', f"cc-connect --config {cc_connect_config}"),
+        'CC_CONNECT_START_CMD': configured_env_get('CC_CONNECT_START_CMD', ''),
+    }
+
+
+def install_persisted_env(resolved_config):
+    return {
+        key: resolved_config[key]
+        for key in INSTALL_PERSISTED_ENV_KEYS
+        if resolved_config.get(key)
+    }
 
 
 def cmd_install(args):
@@ -1532,43 +1670,28 @@ def cmd_install(args):
     if not (env_info['claude_code'] and env_info['cc_connect'] and env_info['discord']):
         raise DiscordSkillError('Current environment does not clearly match Discord + cc-connect + Claude Code')
 
-    env_path = ensure_env_file(dry_run=args.dry_run)
-    updates = {
-        'CC_CONNECT_CONFIG': str(CC_CONNECT_CONFIG),
-        'CC_CONNECT_SESSIONS_DIR': str(CC_CONNECT_SESSIONS_DIR),
-        'CC_CONNECT_DATA_DIR': str(Path(os.environ.get('CC_CONNECT_DATA_DIR', '~/.cc-connect')).expanduser()),
-        'CLAUDE_PROJECTS_DIR': str(Path(os.environ.get('CLAUDE_PROJECTS_DIR', '~/.claude/projects')).expanduser()),
-        'DISCORD_SKILL_ROOT': str(SKILL_ROOT),
-        'DISCORD_SKILL_STATE_DIR': str(STATE_ROOT),
-        'DISCORD_API_BASE': DISCORD_API_BASE,
-        'CC_CONNECT_LOG': os.environ.get('CC_CONNECT_LOG', str(Path('~/.cc-connect/cc-connect.log').expanduser())),
-        'CC_CONNECT_BIN': os.environ.get('CC_CONNECT_BIN', 'cc-connect'),
-        'CC_CONNECT_MATCH': os.environ.get('CC_CONNECT_MATCH', f'cc-connect --config {CC_CONNECT_CONFIG}'),
-        'CC_CONNECT_START_CMD': os.environ.get('CC_CONNECT_START_CMD', ''),
-    }
-    for key in ('DISCORD_BOT_TOKEN', 'DISCORD_SKILL_LLM_BASE_URL', 'DISCORD_SKILL_LLM_API_KEY', 'DISCORD_SKILL_LLM_MODEL'):
-        if os.environ.get(key):
-            updates[key] = os.environ.get(key)
-    merged_env = write_env_file(env_path, updates, dry_run=args.dry_run)
+    install_dir = Path(args.install_dir or configured_env_get('DISCORD_SKILL_ROOT', str(DEFAULT_SKILL_INSTALL_DIR))).expanduser()
+    resolved_config = collect_install_config(install_dir=install_dir)
+    token, token_source = resolve_discord_token_with_source()
+    secret_sources = detect_secret_sources(token_source=token_source)
 
-    token = load_cc_token()
     ctx = context_for_target(args.channel_id, token)
     guild_id = ctx['channel']['guild_id']
     if not guild_id:
         raise DiscordSkillError('Could not infer guild_id from current Discord context')
 
-    permissions_ns = argparse.Namespace(channel_id=args.channel_id, json=True)
     me = get_current_user(token)
     member = get_guild_member(guild_id, me.get('id'), token)
-    permissions_value = int(member.get('permissions') or 0)
+    permissions_value = guild_member_permissions(member, guild_id, token)
     missing = [name for name, bit in REQUIRED_PERMISSION_BITS.items() if not (permissions_value & bit)]
     if missing:
         result = {
             'action': 'install',
             'dry_run': args.dry_run,
             'environment': env_info,
-            'env_path': str(env_path),
-            'env_updates': merged_env,
+            'config_mode': 'current environment / Claude local settings env (install persists selected DISCORD_* settings)',
+            'resolved_config': resolved_config,
+            'secret_sources': secret_sources,
             'permissions_ok': False,
             'missing_permissions': missing,
             'oauth_scopes': ['bot', 'applications.commands'],
@@ -1578,21 +1701,31 @@ def cmd_install(args):
         print_result(result, args.json)
         return
 
+    llm_pending = [
+        key for key in ('DISCORD_SKILL_LLM_BASE_URL', 'DISCORD_SKILL_LLM_API_KEY', 'DISCORD_SKILL_LLM_MODEL')
+        if secret_sources.get(key) == 'missing'
+    ]
+
+    install_copy = install_repo_from_github(
+        install_dir=install_dir,
+        zip_url=args.zip_url or resolved_config['DISCORD_SKILL_INSTALL_REPO_ZIP_URL'],
+        dry_run=args.dry_run,
+    )
+
+    persisted_env = install_persisted_env(resolved_config)
+    if not args.dry_run:
+        write_claude_local_settings_env(persisted_env, dry_run=False)
+
     structure = ensure_default_server_structure(guild_id, token, dry_run=args.dry_run)
     maintenance = structure['maintenance_channel']
     recycle = structure['recycle_category']
     general_entry = structure['general_entry_channel']
 
-    llm_pending = [
-        key for key in ('DISCORD_SKILL_LLM_BASE_URL', 'DISCORD_SKILL_LLM_API_KEY', 'DISCORD_SKILL_LLM_MODEL')
-        if not (merged_env.get(key) or os.environ.get(key))
-    ]
-
     migration_result = None
     watcher_started = False
-    watcher_cmd = ['python3', str(SKILL_ROOT / 'bin' / 'discord-watch.py'), '--daemon']
+    watcher_cmd = ['python3', str(install_dir / 'bin' / 'discord-watch.py'), '--daemon']
     if not args.dry_run:
-        migrate_mod = load_migrate_module()
+        migrate_mod = load_migrate_module(install_dir)
         current_session = current_session_key()
         if not current_session.startswith('discord:'):
             raise DiscordSkillError('Current context is not a Discord thread session')
@@ -1612,15 +1745,16 @@ def cmd_install(args):
         if new_thread_id:
             install_report = (
                 f"安装完成。\n\n"
-                f"- 维护频道：{maintenance.get('name')}\n"
+                f"- 控制频道：{maintenance.get('name')}\n"
                 f"- 通用入口：{general_entry.get('name')}\n"
                 f"- 回收类：{recycle.get('name')}\n"
+                f"- 安装目录：{install_dir}\n"
+                f"- 配置来源：当前环境 / Claude local settings（仅持久化选定 DISCORD_* 配置）\n"
                 f"- watcher：准备后台启动\n"
                 f"- LLM 待确认字段：{', '.join(llm_pending) if llm_pending else '无'}"
             )
             send_message(new_thread_id, token, install_report)
-        import subprocess
-        log_path = STATE_ROOT / 'watcher' / 'watcher-install.log'
+        log_path = Path(resolved_config['DISCORD_SKILL_STATE_DIR']) / 'watcher' / 'watcher-install.log'
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open('ab') as out:
             subprocess.Popen(watcher_cmd, stdout=out, stderr=out, stdin=subprocess.DEVNULL, start_new_session=True)
@@ -1632,8 +1766,11 @@ def cmd_install(args):
         'action': 'install',
         'dry_run': args.dry_run,
         'environment': env_info,
-        'env_path': str(env_path),
-        'env_updates': merged_env,
+        'config_mode': 'current environment / Claude local settings env (install persists selected DISCORD_* settings)',
+        'install_copy': install_copy,
+        'resolved_config': resolved_config,
+        'persisted_env_keys': sorted(persisted_env.keys()),
+        'secret_sources': secret_sources,
         'permissions_ok': True,
         'maintenance_channel': maintenance,
         'general_entry_channel': general_entry,
@@ -1973,6 +2110,8 @@ def build_parser():
 
     install = sub.add_parser("install")
     install.add_argument("--channel-id")
+    install.add_argument("--install-dir")
+    install.add_argument("--zip-url")
     install.add_argument("--dry-run", action="store_true")
     install.add_argument("--json", action="store_true")
     install.set_defaults(func=cmd_install)

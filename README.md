@@ -30,7 +30,6 @@ docs/
   CONTINUATION_MIGRATE.md
   WATCHER.md
 state/
-.env.example
 LICENSE
 README.md
 SKILL.md
@@ -39,7 +38,7 @@ SKILL.md
 ## Scripts
 
 ### `bin/discordctl.py`
-Main CLI for Discord management and organize planning.
+Main CLI for Discord management, organize planning, and agent-driven installation into the Claude skill area.
 
 ### `bin/discord-watch.py`
 Watcher that scans cc-connect session stores and auto-renames new Discord threads.
@@ -72,12 +71,12 @@ Recommended OAuth2 scopes:
 
 Recommended permission bitfield for invite/authorization:
 
-- `395137059856`
+- `326417583120`
 
 Example authorization URL template:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot%20applications.commands&permissions=395137059856
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot%20applications.commands&permissions=326417583120
 ```
 
 How to authorize:
@@ -134,7 +133,6 @@ See:
 
 - `docs/CONFIGURATION.md`
 - `docs/INSTALLATION.md`
-- `.env.example`
 
 ## Agent-guided setup
 
@@ -148,8 +146,10 @@ That file tells an agent to:
 - automatically check whether the bot already has the required Discord server permissions
 - if permissions are missing, stop and tell the user how to authorize the bot before continuing
 - refuse installation outside that workflow
-- auto-fill all detectable local settings
+- auto-fill all detectable local settings from the current environment
 - ask the user only for AI endpoint / key / model confirmation
+- fetch the repository from GitHub and install it into the Claude skill area instead of relying on unrelated local files
+- if a required value is missing, prefer Claude local settings so it becomes an environment variable
 - install now has a real command entry: `python3 bin/discordctl.py install --json`
 - during install, automatically ensure both structures exist: a general-purpose top-level entry channel (`通用入口`, reused if a top-level `入口` channel already exists) and a maintenance/control top-level channel (`服务器维护专用`, reused if a top-level `维护` channel already exists), plus a recycle category (`回收站`, reused if a `回收` category already exists)
 - continuation-migrate the current thread into `服务器维护专用` and rename it to `Discord/cc-connect 控制台`

@@ -57,7 +57,11 @@ After the environment gate passes, the agent should also run a bot permission ch
 If the environment matches:
 
 - perform installation proactively
-- fill in all detectable values automatically
+- download the repository from GitHub instead of installing from unrelated local files
+- install it into the Claude Code skill area (for example under `~/.claude/skills/discord-cc-organizer/`)
+- fill in all detectable values automatically from the current runtime environment, cc-connect, and Claude settings
+- do not require `.env` for agent installation
+- if a required value is not available from the current environment, ask the user for it or write it into Claude local settings so it becomes available as an environment variable
 - ask the user only for:
   - `DISCORD_SKILL_LLM_BASE_URL`
   - `DISCORD_SKILL_LLM_API_KEY`
@@ -112,7 +116,7 @@ Recommended OAuth2 scopes:
 
 Recommended permissions bitfield:
 
-- `395137059856`
+- `326417583120`
 
 ### Discord token source
 
@@ -132,22 +136,24 @@ The agent should set up the repository for local use, not publish it.
 
 Recommended install actions:
 
-1. Ensure the repository directory exists
-2. Ensure the `state/` directory exists
-3. Ensure `.env` exists, based on `.env.example`
-4. Fill in all auto-detectable variables
+1. Download the repository from GitHub into the Claude Code skill area (for example `~/.claude/skills/discord-cc-organizer/`)
+2. Ensure the `state/` directory exists inside that installed skill directory
+3. Detect all auto-detectable variables from the current runtime environment
+4. If install-local non-secret `DISCORD_*` values need to survive outside the current process, prefer writing them to Claude local settings so they become runtime environment variables
 5. Run `python3 bin/discordctl.py permissions-check --json`
 6. If permissions are insufficient, stop and guide the user to re-authorize the bot, then wait
-7. Leave LLM variables blank if not confirmed
-8. Tell the user exactly what was auto-filled
-9. Tell the user which LLM fields still need confirmation
-10. After installation is fully confirmed, automatically ensure default Discord server structure:
+7. Leave LLM variables pending until confirmed
+8. Fetch the canonical GitHub repository into the Claude skill area
+9. Persist the detected non-secret install/runtime `DISCORD_*` values into Claude local settings env
+10. Tell the user exactly what was auto-detected
+11. Tell the user which LLM fields still need confirmation
+12. After installation is fully confirmed, automatically ensure default Discord server structure:
    - ensure a general-purpose top-level entry channel exists: reuse a top-level channel containing `入口`, or create `通用入口`
    - ensure a maintenance/control top-level channel exists: reuse a top-level channel containing `维护`, or create `服务器维护专用`
    - ensure a recycle category exists: reuse a category containing `回收`, or create `回收站`
-11. Continuation-migrate the current thread into the maintenance/control top-level channel
-12. Rename the new continuation thread to `Discord/cc-connect 控制台`
-13. Restart the relevant local runtime if needed and report completion in the new control thread
+13. Continuation-migrate the current thread into the maintenance/control top-level channel
+14. Rename the new continuation thread to `Discord/cc-connect 控制台`
+15. Restart the relevant local runtime if needed and report completion in the new control thread
 
 Important:
 
@@ -168,7 +174,8 @@ Important:
 - Do not continue installation if the bot is missing required Discord permissions
 - Do not ask unnecessary questions for values that can be detected automatically
 - Do not expose bot tokens, API keys, or secret config values in output
-- Do not overwrite a user’s existing `.env` blindly; update only known keys
+- Do not depend on `.env` for agent installation
+- Do not install from unrelated local copies when the canonical GitHub repository should be fetched
 - Do not fabricate paths that do not exist
 - Do not assume LLM provider/model values
 - Do not start the watcher before installation/config writing has completed successfully
@@ -240,7 +247,9 @@ and may redirect logs to a file under `state/watcher/`.
 
 ---
 
-## Suggested .env keys
+## Suggested runtime/local-settings keys
+
+These values should come from the current runtime environment when possible. In the current install flow, only non-secret `DISCORD_*` install/runtime values are persisted automatically; if the agent must persist any relevant values, prefer Claude local settings so they are exposed back as environment variables:
 
 ```env
 DISCORD_BOT_TOKEN=
@@ -251,6 +260,7 @@ CLAUDE_PROJECTS_DIR=
 DISCORD_SKILL_ROOT=
 DISCORD_SKILL_STATE_DIR=
 DISCORD_API_BASE=https://discord.com/api/v10
+DISCORD_SKILL_INSTALL_REPO_ZIP_URL=
 DISCORD_SKILL_LLM_BASE_URL=
 DISCORD_SKILL_LLM_API_KEY=
 DISCORD_SKILL_LLM_MODEL=

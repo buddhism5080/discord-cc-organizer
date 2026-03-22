@@ -2,6 +2,14 @@
 
 This project is configured primarily through environment variables.
 
+For agent-guided installs, the preferred source is:
+
+1. current process environment
+2. Claude settings env (`~/.claude/settings.local.json`, then `~/.claude/settings.json`)
+3. cc-connect config for Discord token fallback
+
+Agent installs should not rely on a repository-local `.env` file.
+
 ## Required
 
 ### `DISCORD_BOT_TOKEN`
@@ -61,6 +69,15 @@ Default:
 
 ```text
 <repo>/state
+```
+
+### `DISCORD_SKILL_INSTALL_REPO_ZIP_URL`
+Optional GitHub/source archive URL used by `install`.
+
+Default:
+
+```text
+https://github.com/buddhism5080/discord-cc-organizer/archive/refs/heads/main.zip
 ```
 
 ## LLM title/summary generation
