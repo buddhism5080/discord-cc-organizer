@@ -1653,7 +1653,7 @@ def collect_install_config(install_dir=None):
         'DISCORD_SKILL_INSTALL_REPO_ZIP_URL': configured_env_get('DISCORD_SKILL_INSTALL_REPO_ZIP_URL', DEFAULT_INSTALL_REPO_ZIP_URL),
         'CC_CONNECT_LOG': configured_env_get('CC_CONNECT_LOG', str(Path('~/.cc-connect/cc-connect.log').expanduser())),
         'CC_CONNECT_BIN': configured_env_get('CC_CONNECT_BIN', 'cc-connect'),
-        'CC_CONNECT_MATCH': configured_env_get('CC_CONNECT_MATCH', f"cc-connect --config {cc_connect_config}"),
+        'CC_CONNECT_MATCH': configured_env_get('CC_CONNECT_MATCH', 'cc-connect'),
         'CC_CONNECT_START_CMD': configured_env_get('CC_CONNECT_START_CMD', ''),
     }
 

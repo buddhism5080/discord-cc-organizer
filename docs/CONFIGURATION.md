@@ -111,18 +111,24 @@ cc-connect
 ```
 
 ### `CC_CONNECT_MATCH`
-Substring used to detect running cc-connect processes in `ps` output.
+Substring used to detect running cc-connect processes in `ps` output. Claude processes are ignored even if their arguments contain this substring.
 
 Default:
 
 ```text
-cc-connect --config <CC_CONNECT_CONFIG>
+cc-connect
 ```
 
 ### `CC_CONNECT_START_CMD`
 Optional full shell command used instead of `CC_CONNECT_BIN`.
 
-Use this if your install path or startup method is unusual.
+By default, the restart logic starts:
+
+```text
+cc-connect
+```
+
+Use this only if your startup method is unusual.
 
 ## Discord API
 

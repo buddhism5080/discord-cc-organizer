@@ -95,7 +95,7 @@ The agent should try to fill these automatically.
 
 - `DISCORD_API_BASE` = `https://discord.com/api/v10`
 - `CC_CONNECT_BIN` = `cc-connect`
-- `CC_CONNECT_MATCH` = `cc-connect --config <CC_CONNECT_CONFIG>`
+- `CC_CONNECT_MATCH` = `cc-connect` (Claude processes are ignored during stop detection)
 
 ### Required Discord bot permissions
 

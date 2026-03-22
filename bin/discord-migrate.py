@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import re
 import signal
 import subprocess
@@ -22,7 +23,7 @@ _watch_spec.loader.exec_module(discord_watch)
 CC_CONNECT_CONFIG = Path(discordctl.configured_env_get('CC_CONNECT_CONFIG', '~/.cc-connect/config.toml')).expanduser()
 CC_CONNECT_LOG = Path(discordctl.configured_env_get('CC_CONNECT_LOG', '~/.cc-connect/cc-connect.log')).expanduser()
 CC_CONNECT_BIN = discordctl.configured_env_get('CC_CONNECT_BIN', 'cc-connect')
-CC_CONNECT_MATCH = discordctl.configured_env_get('CC_CONNECT_MATCH', f'cc-connect --config {CC_CONNECT_CONFIG}')
+CC_CONNECT_MATCH = discordctl.configured_env_get('CC_CONNECT_MATCH', 'cc-connect')
 CC_CONNECT_START_CMD = discordctl.configured_env_get('CC_CONNECT_START_CMD', '')
 QUIET_WINDOW_SECS = 300
 
@@ -215,24 +216,29 @@ def create_new_thread(token, parent_id, new_title, summary):
     raise MigrationError('Target parent must be a forum or text channel')
 
 
-def stop_cc_connect():
-    out = subprocess.check_output(['ps', '-eo', 'pid,args'], text=True)
+def list_cc_connect_pids():
+    out = subprocess.check_output(['ps', '-eo', 'pid=,comm=,args='], text=True)
     pids = []
-    for line in out.splitlines()[1:]:
-        if CC_CONNECT_MATCH in line:
-            pid = int(line.strip().split(None, 1)[0])
-            pids.append(pid)
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid_text, comm, args = parts
+        if comm == 'claude':
+            continue
+        if CC_CONNECT_MATCH in args:
+            pids.append(int(pid_text))
+    return pids
+
+
+def stop_cc_connect():
+    pids = list_cc_connect_pids()
     for pid in pids:
         os.kill(pid, signal.SIGTERM)
     deadline = time.time() + 10
     while time.time() < deadline:
         time.sleep(0.5)
-        live = []
-        out = subprocess.check_output(['ps', '-eo', 'pid,args'], text=True)
-        for line in out.splitlines()[1:]:
-            if CC_CONNECT_MATCH in line:
-                pid = int(line.strip().split(None, 1)[0])
-                live.append(pid)
+        live = list_cc_connect_pids()
         if not live:
             return pids
     raise MigrationError(f'cc-connect did not stop within timeout; still running: {live}')
@@ -252,7 +258,7 @@ def start_cc_connect():
             )
         else:
             p = subprocess.Popen([
-                CC_CONNECT_BIN, '--config', str(CC_CONNECT_CONFIG)
+                CC_CONNECT_BIN
             ], stdout=out, stderr=out, stdin=subprocess.DEVNULL, start_new_session=True)
     return p.pid
 
