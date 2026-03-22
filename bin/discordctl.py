@@ -15,8 +15,31 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib
 
-DISCORD_API_BASE = os.environ.get("DISCORD_API_BASE", "https://discord.com/api/v10")
 REPO_ROOT = Path(__file__).resolve().parent.parent
+DOTENV_PATH = REPO_ROOT / ".env"
+
+
+def load_dotenv_file(path):
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_dotenv_file(DOTENV_PATH)
+
+DISCORD_API_BASE = os.environ.get("DISCORD_API_BASE", "https://discord.com/api/v10")
 CC_CONNECT_CONFIG = Path(os.environ.get("CC_CONNECT_CONFIG", "~/.cc-connect/config.toml")).expanduser()
 CC_CONNECT_SESSIONS_DIR = Path(os.environ.get("CC_CONNECT_SESSIONS_DIR", "~/.cc-connect/sessions")).expanduser()
 SKILL_ROOT = Path(os.environ.get("DISCORD_SKILL_ROOT", str(REPO_ROOT))).expanduser()
@@ -164,6 +187,63 @@ def get_current_user(token):
 
 def get_guild_member(guild_id, user_id, token):
     return api_request("GET", f"/guilds/{guild_id}/members/{user_id}", token)
+
+
+def env_bool(name):
+    return (os.environ.get(name) or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def detect_install_environment():
+    session_key = current_session_key()
+    cc_connect_config_exists = CC_CONNECT_CONFIG.exists()
+    cc_connect_sessions_exists = CC_CONNECT_SESSIONS_DIR.exists()
+    claude_root_exists = (Path.home() / '.claude').exists()
+    cc_project_exists = bool(os.environ.get('CC_PROJECT'))
+    discord_session = session_key.startswith('discord:')
+    return {
+        'claude_code': bool(session_key or cc_project_exists or claude_root_exists),
+        'cc_connect': bool(cc_connect_config_exists or cc_connect_sessions_exists),
+        'discord': bool(discord_session),
+        'session_key': session_key or None,
+        'cc_connect_config_exists': cc_connect_config_exists,
+        'cc_connect_sessions_exists': cc_connect_sessions_exists,
+        'claude_root_exists': claude_root_exists,
+    }
+
+
+def ensure_env_file(dry_run=False):
+    env_path = REPO_ROOT / '.env'
+    example_path = REPO_ROOT / '.env.example'
+    if env_path.exists():
+        return env_path
+    if dry_run:
+        return env_path
+    if not example_path.exists():
+        raise DiscordSkillError(f'Missing .env.example at {example_path}')
+    env_path.write_text(example_path.read_text(encoding='utf-8'), encoding='utf-8')
+    return env_path
+
+
+def parse_env_file(path):
+    data = {}
+    if not path.exists():
+        return data
+    for raw in path.read_text(encoding='utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        data[key.strip()] = value.strip()
+    return data
+
+
+def write_env_file(path, updates, dry_run=False):
+    existing = parse_env_file(path)
+    merged = {**existing, **updates}
+    lines = [f'{k}={v}' for k, v in merged.items()]
+    if not dry_run:
+        path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return merged
 
 
 def list_active_guild_threads(guild_id, token):
@@ -954,20 +1034,39 @@ def ensure_text_channel(guild_id, token, name, parent_id=None, dry_run=False):
     return summarize_channel(created)
 
 
-def ensure_default_server_structure(guild_id, token, dry_run=False, entry_channel_name='服务器维护专用', recycle_category_name='回收站'):
+def ensure_default_server_structure(
+    guild_id,
+    token,
+    dry_run=False,
+    general_entry_name='通用入口',
+    maintenance_channel_name='服务器维护专用',
+    recycle_category_name='回收站',
+):
     channels = [summarize_channel(ch) for ch in list_guild_channels(guild_id, token)]
 
-    entry = next(
+    general_entry = next(
         (
             ch for ch in channels
             if ch['type_name'] == 'text'
             and not ch.get('parent_id')
-            and any(word in (ch.get('name') or '') for word in ('维护', '入口'))
+            and '入口' in (ch.get('name') or '')
         ),
         None,
     )
-    if entry is None:
-        entry = ensure_text_channel(guild_id, token, entry_channel_name, parent_id=None, dry_run=dry_run)
+    if general_entry is None:
+        general_entry = ensure_text_channel(guild_id, token, general_entry_name, parent_id=None, dry_run=dry_run)
+
+    maintenance = next(
+        (
+            ch for ch in channels
+            if ch['type_name'] == 'text'
+            and not ch.get('parent_id')
+            and '维护' in (ch.get('name') or '')
+        ),
+        None,
+    )
+    if maintenance is None:
+        maintenance = ensure_text_channel(guild_id, token, maintenance_channel_name, parent_id=None, dry_run=dry_run)
 
     recycle = next(
         (
@@ -981,7 +1080,8 @@ def ensure_default_server_structure(guild_id, token, dry_run=False, entry_channe
         recycle = ensure_category(guild_id, token, recycle_category_name, dry_run=dry_run)
 
     return {
-        'entry_channel': entry,
+        'general_entry_channel': general_entry,
+        'maintenance_channel': maintenance,
         'recycle_category': recycle,
         'dry_run': dry_run,
     }
@@ -1418,13 +1518,136 @@ def cmd_migration_registry(args):
     print_result(result, args.json)
 
 
-def cmd_organize_execute(args):
+def load_migrate_module():
     import importlib.util
-
     migrate_path = SKILL_ROOT / 'bin' / 'discord-migrate.py'
     migrate_spec = importlib.util.spec_from_file_location('discord_migrate_runtime', migrate_path)
     migrate_mod = importlib.util.module_from_spec(migrate_spec)
     migrate_spec.loader.exec_module(migrate_mod)
+    return migrate_mod
+
+
+def cmd_install(args):
+    env_info = detect_install_environment()
+    if not (env_info['claude_code'] and env_info['cc_connect'] and env_info['discord']):
+        raise DiscordSkillError('Current environment does not clearly match Discord + cc-connect + Claude Code')
+
+    env_path = ensure_env_file(dry_run=args.dry_run)
+    updates = {
+        'CC_CONNECT_CONFIG': str(CC_CONNECT_CONFIG),
+        'CC_CONNECT_SESSIONS_DIR': str(CC_CONNECT_SESSIONS_DIR),
+        'CC_CONNECT_DATA_DIR': str(Path(os.environ.get('CC_CONNECT_DATA_DIR', '~/.cc-connect')).expanduser()),
+        'CLAUDE_PROJECTS_DIR': str(Path(os.environ.get('CLAUDE_PROJECTS_DIR', '~/.claude/projects')).expanduser()),
+        'DISCORD_SKILL_ROOT': str(SKILL_ROOT),
+        'DISCORD_SKILL_STATE_DIR': str(STATE_ROOT),
+        'DISCORD_API_BASE': DISCORD_API_BASE,
+        'CC_CONNECT_LOG': os.environ.get('CC_CONNECT_LOG', str(Path('~/.cc-connect/cc-connect.log').expanduser())),
+        'CC_CONNECT_BIN': os.environ.get('CC_CONNECT_BIN', 'cc-connect'),
+        'CC_CONNECT_MATCH': os.environ.get('CC_CONNECT_MATCH', f'cc-connect --config {CC_CONNECT_CONFIG}'),
+        'CC_CONNECT_START_CMD': os.environ.get('CC_CONNECT_START_CMD', ''),
+    }
+    for key in ('DISCORD_BOT_TOKEN', 'DISCORD_SKILL_LLM_BASE_URL', 'DISCORD_SKILL_LLM_API_KEY', 'DISCORD_SKILL_LLM_MODEL'):
+        if os.environ.get(key):
+            updates[key] = os.environ.get(key)
+    merged_env = write_env_file(env_path, updates, dry_run=args.dry_run)
+
+    token = load_cc_token()
+    ctx = context_for_target(args.channel_id, token)
+    guild_id = ctx['channel']['guild_id']
+    if not guild_id:
+        raise DiscordSkillError('Could not infer guild_id from current Discord context')
+
+    permissions_ns = argparse.Namespace(channel_id=args.channel_id, json=True)
+    me = get_current_user(token)
+    member = get_guild_member(guild_id, me.get('id'), token)
+    permissions_value = int(member.get('permissions') or 0)
+    missing = [name for name, bit in REQUIRED_PERMISSION_BITS.items() if not (permissions_value & bit)]
+    if missing:
+        result = {
+            'action': 'install',
+            'dry_run': args.dry_run,
+            'environment': env_info,
+            'env_path': str(env_path),
+            'env_updates': merged_env,
+            'permissions_ok': False,
+            'missing_permissions': missing,
+            'oauth_scopes': ['bot', 'applications.commands'],
+            'oauth_permissions': str(sum(REQUIRED_PERMISSION_BITS.values())),
+            'message': 'Bot permissions are insufficient; re-authorize before continuing',
+        }
+        print_result(result, args.json)
+        return
+
+    structure = ensure_default_server_structure(guild_id, token, dry_run=args.dry_run)
+    maintenance = structure['maintenance_channel']
+    recycle = structure['recycle_category']
+    general_entry = structure['general_entry_channel']
+
+    llm_pending = [
+        key for key in ('DISCORD_SKILL_LLM_BASE_URL', 'DISCORD_SKILL_LLM_API_KEY', 'DISCORD_SKILL_LLM_MODEL')
+        if not (merged_env.get(key) or os.environ.get(key))
+    ]
+
+    migration_result = None
+    watcher_started = False
+    watcher_cmd = ['python3', str(SKILL_ROOT / 'bin' / 'discord-watch.py'), '--daemon']
+    if not args.dry_run:
+        migrate_mod = load_migrate_module()
+        current_session = current_session_key()
+        if not current_session.startswith('discord:'):
+            raise DiscordSkillError('Current context is not a Discord thread session')
+        migrate_args = argparse.Namespace(
+            old_session_key=current_session,
+            target_parent_id=maintenance['id'],
+            target_parent_name=maintenance['name'],
+            organize_thread_id=None,
+            title='Discord/cc-connect 控制台',
+            summary='安装完成后的 Discord / cc-connect 控制面线程。',
+            skip_quiet_window_check=True,
+            dry_run=False,
+            json=True,
+        )
+        migration_result = migrate_mod.run(migrate_args)
+        new_thread_id = migration_result.get('new_thread_id')
+        if new_thread_id:
+            install_report = (
+                f"安装完成。\n\n"
+                f"- 维护频道：{maintenance.get('name')}\n"
+                f"- 通用入口：{general_entry.get('name')}\n"
+                f"- 回收类：{recycle.get('name')}\n"
+                f"- watcher：准备后台启动\n"
+                f"- LLM 待确认字段：{', '.join(llm_pending) if llm_pending else '无'}"
+            )
+            send_message(new_thread_id, token, install_report)
+        import subprocess
+        log_path = STATE_ROOT / 'watcher' / 'watcher-install.log'
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open('ab') as out:
+            subprocess.Popen(watcher_cmd, stdout=out, stderr=out, stdin=subprocess.DEVNULL, start_new_session=True)
+        watcher_started = True
+        if new_thread_id:
+            send_message(new_thread_id, token, 'watcher 已在后台启动。')
+
+    result = {
+        'action': 'install',
+        'dry_run': args.dry_run,
+        'environment': env_info,
+        'env_path': str(env_path),
+        'env_updates': merged_env,
+        'permissions_ok': True,
+        'maintenance_channel': maintenance,
+        'general_entry_channel': general_entry,
+        'recycle_category': recycle,
+        'llm_pending': llm_pending,
+        'migration_result': migration_result,
+        'watcher_started': watcher_started,
+        'message': 'install flow completed' if not llm_pending else 'install flow completed; LLM confirmation still pending',
+    }
+    print_result(result, args.json)
+
+
+def cmd_organize_execute(args):
+    migrate_mod = load_migrate_module()
 
     plan = get_organize_plan(args.plan_id)
     if not plan:
@@ -1747,6 +1970,12 @@ def build_parser():
     permissions_check.add_argument("--channel-id")
     permissions_check.add_argument("--json", action="store_true")
     permissions_check.set_defaults(func=cmd_permissions_check)
+
+    install = sub.add_parser("install")
+    install.add_argument("--channel-id")
+    install.add_argument("--dry-run", action="store_true")
+    install.add_argument("--json", action="store_true")
+    install.set_defaults(func=cmd_install)
 
     structure = sub.add_parser("structure")
     structure.add_argument("--channel-id")

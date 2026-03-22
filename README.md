@@ -142,9 +142,10 @@ That file tells an agent to:
 - refuse installation outside that workflow
 - auto-fill all detectable local settings
 - ask the user only for AI endpoint / key / model confirmation
-- after a successful install in a matching environment, automatically reuse-or-create the default structure: an existing top-level `维护`/`入口` channel or `服务器维护专用`, plus an existing `回收` category or `回收站`
+- install now has a real command entry: `python3 bin/discordctl.py install --json`
+- during install, automatically ensure both structures exist: a general-purpose top-level entry channel (`通用入口`, reused if a top-level `入口` channel already exists) and a maintenance/control top-level channel (`服务器维护专用`, reused if a top-level `维护` channel already exists), plus a recycle category (`回收站`, reused if a `回收` category already exists)
 - continuation-migrate the current thread into `服务器维护专用` and rename it to `Discord/cc-connect 控制台`
-- align cleanup protection with that default structure: protect names containing `回收`, `维护`, or `入口`, including the `回收站` category and its children plus the top-level `服务器维护专用` channel
+- align cleanup protection with that default structure: protect names containing `回收`, `维护`, or `入口`, including the `回收站` category and its children plus top-level maintenance/entry channels
 - auto-start the watcher after that
 - also allow the watcher to be started later from a natural-language user request
 

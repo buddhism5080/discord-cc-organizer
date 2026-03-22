@@ -28,6 +28,14 @@ It tells an agent to:
 5. Optionally set LLM variables for title/summary generation
 6. Run the scripts from the repository root
 
+## Real install command
+
+A real install orchestration entry now exists:
+
+```bash
+python3 bin/discordctl.py install --json
+```
+
 ## Permission check during agent install
 
 An agent should automatically run:
@@ -43,13 +51,14 @@ If required permissions are missing, the agent should stop and guide the user to
 If installation is happening in a matching Discord + cc-connect + Claude Code environment, the agent should do this after installation succeeds:
 
 1. finish installation and config writing first
-2. reuse an existing top-level text channel if its name contains `维护` or `入口`; otherwise create `服务器维护专用`
-3. reuse an existing category if its name contains `回收`; otherwise create `回收站`
-4. continuation-migrate the current thread into `服务器维护专用`
-5. rename the new continuation thread to `Discord/cc-connect 控制台`
-6. restart/report as needed for the migration flow
-7. start `python3 bin/discord-watch.py --daemon` in the background
-8. optionally store logs/PID information under `state/watcher/`
+2. ensure a general-purpose top-level entry channel exists: reuse a top-level channel containing `入口`, or create `通用入口`
+3. ensure a maintenance/control top-level channel exists: reuse a top-level channel containing `维护`, or create `服务器维护专用`
+4. ensure a recycle category exists: reuse a category containing `回收`, or create `回收站`
+5. continuation-migrate the current thread into `服务器维护专用`
+6. rename the new continuation thread to `Discord/cc-connect 控制台`
+7. restart/report as needed for the migration flow, and send an install-complete report in the new control thread
+8. start `python3 bin/discord-watch.py --daemon` in the background
+9. optionally store logs/PID information under `state/watcher/`
 
 A later natural-language request such as "启动 watcher" or "后台运行 watcher" should still work the same way: re-check the environment, and if it matches, start the watcher in the background.
 

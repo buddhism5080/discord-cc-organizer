@@ -142,18 +142,20 @@ Recommended install actions:
 8. Tell the user exactly what was auto-filled
 9. Tell the user which LLM fields still need confirmation
 10. After installation is fully confirmed, automatically ensure default Discord server structure:
-   - reuse an existing top-level text channel if its name contains `维护` or `入口`; otherwise create `服务器维护专用`
-   - reuse an existing category if its name contains `回收`; otherwise create `回收站`
-9. Continuation-migrate the current thread into that top-level text channel
-10. Rename the new continuation thread to `Discord/cc-connect 控制台`
-11. Restart the relevant local runtime if needed and report completion in the new control thread
+   - ensure a general-purpose top-level entry channel exists: reuse a top-level channel containing `入口`, or create `通用入口`
+   - ensure a maintenance/control top-level channel exists: reuse a top-level channel containing `维护`, or create `服务器维护专用`
+   - ensure a recycle category exists: reuse a category containing `回收`, or create `回收站`
+11. Continuation-migrate the current thread into the maintenance/control top-level channel
+12. Rename the new continuation thread to `Discord/cc-connect 控制台`
+13. Restart the relevant local runtime if needed and report completion in the new control thread
 
 Important:
 
 - If the environment matches and installation succeeds, the agent should automatically create the default Discord server structure first
-- The default structure should be:
-  - top-level text channel: `服务器维护专用`
-  - category: `回收站`
+- The default structure should distinguish:
+  - general-purpose entry channel: `通用入口`
+  - maintenance/control channel: `服务器维护专用`
+  - recycle category: `回收站`
 - After that, the agent should continuation-migrate the current thread into `服务器维护专用`
 - The new thread title should be `Discord/cc-connect 控制台`
 - After migration/restart succeeds, report completion in the new control thread, then ensure the watcher is running

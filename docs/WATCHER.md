@@ -8,7 +8,7 @@
 python3 bin/discord-watch.py --daemon
 ```
 
-如果安装发生在匹配的 Discord + cc-connect + Claude Code 环境中，agent 应在安装成功后先自动复用或创建默认结构（已有顶层 `维护`/`入口` channel 则复用，否则创建 `服务器维护专用`；已有 `回收` 类则复用，否则创建 `回收站`），把当前 thread 迁移为 `Discord/cc-connect 控制台`，再后台启动 watcher。
+如果安装发生在匹配的 Discord + cc-connect + Claude Code 环境中，agent 应在安装成功后先自动确保两套结构存在：用户随手发起对话用的顶层 `通用入口`，以及维护/控制用的顶层 `服务器维护专用`，再确保 `回收站` 存在；随后把当前 thread 迁移为 `Discord/cc-connect 控制台`，在新控制台 thread 回报安装完成，最后再后台启动 watcher。
 
 ## 单次扫描调试
 

@@ -144,9 +144,10 @@ python3 bin/discordctl.py organize-execute --plan-id <plan_id> --force-busy --js
 - 不在不匹配环境里安装
 - 自动填充所有可探测的本地设置
 - 只向用户确认 AI endpoint / key / model
-- 在匹配环境中安装成功后自动复用或创建默认结构：已有顶层 `维护`/`入口` channel 就复用，否则创建 `服务器维护专用`；已有 `回收` 类就复用，否则创建 `回收站`
+- 现在已有真实安装命令入口：`python3 bin/discordctl.py install --json`
+- 安装时会确保两套结构都存在：一个给用户随意发起对话的顶层 `通用入口`（若已有顶层 `入口` channel 则复用），一个维护/控制用途的顶层 `服务器维护专用`（若已有顶层 `维护` channel 则复用），以及一个 `回收站`（若已有 `回收` 类则复用）
 - 将当前 thread continuation-migrate 到 `服务器维护专用`，并改名为 `Discord/cc-connect 控制台`
-- 清理保护逻辑同时保护：名称含 `回收` / `维护` / `入口` 的受保护结构；包括 `回收站` category 及其子频道，以及顶层 `服务器维护专用` channel
+- 清理保护逻辑同时保护：名称含 `回收` / `维护` / `入口` 的受保护结构；包括 `回收站` category 及其子频道，以及顶层维护/入口 channel
 - 之后自动后台启动 watcher
 - 也支持后续通过自然语言再次要求启动 watcher
 
