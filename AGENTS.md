@@ -142,12 +142,13 @@ Recommended install actions:
 4. If install-local non-secret `DISCORD_*` values need to survive outside the current process, prefer writing them to Claude local settings so they become runtime environment variables
 5. Run `python3 bin/discordctl.py permissions-check --json`
 6. If permissions are insufficient, stop and guide the user to re-authorize the bot, then wait
-7. Leave LLM variables pending until confirmed
-8. Fetch the canonical GitHub repository into the Claude skill area
-9. Persist the detected non-secret install/runtime `DISCORD_*` values into Claude local settings env
-10. Tell the user exactly what was auto-detected
-11. Tell the user which LLM fields still need confirmation
-12. After installation is fully confirmed, automatically ensure default Discord server structure:
+7. If the permission check fails because of connectivity / TLS / timeout / Discord API reachability problems, stop and report that network/API validation failed instead of telling the user to re-authorize the bot
+8. Leave LLM variables pending until confirmed
+9. Fetch the canonical GitHub repository into the Claude skill area
+10. Persist the detected non-secret install/runtime `DISCORD_*` values into Claude local settings env
+11. Tell the user exactly what was auto-detected
+12. Tell the user which LLM fields still need confirmation
+13. Only after LLM values are fully confirmed, automatically ensure default Discord server structure:
    - ensure a general-purpose top-level entry channel exists: reuse a top-level channel containing `入口`, or create `通用入口`
    - ensure a maintenance/control top-level channel exists: reuse a top-level channel containing `维护`, or create `服务器维护专用`
    - ensure a recycle category exists: reuse a category containing `回收`, or create `回收站`
@@ -196,9 +197,15 @@ Stop before installation and reply briefly like this:
 
 > The bot does not yet have the required Discord server permissions. Please re-authorize it with `bot` + `applications.commands` scopes and the required channel/thread permissions, then I can continue installation.
 
+### If the permission check cannot be completed because Discord API validation failed
+
+Stop before installation and reply briefly like this:
+
+> I could not complete the Discord bot permission check because the Discord API request failed (for example timeout / TLS / connectivity issues). Please retry when network/API access is healthy; I did not treat this as a permissions failure.
+
 ### If environment matches but LLM values are missing
 
-Auto-fill everything else, ask for the missing LLM values, and then complete installation. After installation succeeds, automatically create the default Discord server structure, continuation-migrate the current thread into the maintenance channel as `Discord/cc-connect 控制台`, then start the watcher in the background.
+Auto-fill everything else, ask for the missing LLM values, and then stop before creating default channels, migrating the current thread, or starting the watcher. After LLM confirmation is provided, complete installation, create the default Discord server structure, continuation-migrate the current thread into the maintenance channel as `Discord/cc-connect 控制台`, then start the watcher in the background.
 
 A short summary should include:
 

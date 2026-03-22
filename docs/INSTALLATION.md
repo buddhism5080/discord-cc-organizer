@@ -50,20 +50,23 @@ python3 bin/discordctl.py permissions-check --json
 ```
 
 If required permissions are missing, the agent should stop and guide the user to re-authorize the bot before continuing.
+If the permission check fails because of timeout / TLS / connectivity / Discord API reachability problems, the agent should stop and report a network/API validation failure instead of treating it as missing bot permissions.
 
 ## Post-install default structure and watcher startup
 
-If installation is happening in a matching Discord + cc-connect + Claude Code environment, the agent should do this after installation succeeds:
+If installation is happening in a matching Discord + cc-connect + Claude Code environment, the agent should do this after installation succeeds.
+If LLM values are still pending, installation should stop after persisting the detectable non-secret config and should not yet create default channels, migrate the current thread, or start the watcher.
 
 1. finish installation and config writing first
-2. ensure a general-purpose top-level entry channel exists: reuse a top-level channel containing `入口`, or create `通用入口`
-3. ensure a maintenance/control top-level channel exists: reuse a top-level channel containing `维护`, or create `服务器维护专用`
-4. ensure a recycle category exists: reuse a category containing `回收`, or create `回收站`
-5. continuation-migrate the current thread into `服务器维护专用`
-6. rename the new continuation thread to `Discord/cc-connect 控制台`
-7. restart/report as needed for the migration flow, and send an install-complete report in the new control thread
-8. start `python3 bin/discord-watch.py --daemon` in the background
-9. optionally store logs/PID information under `state/watcher/`
+2. ensure LLM confirmation is complete before any Discord-side structural changes
+3. ensure a general-purpose top-level entry channel exists: reuse a top-level channel containing `入口`, or create `通用入口`
+4. ensure a maintenance/control top-level channel exists: reuse a top-level channel containing `维护`, or create `服务器维护专用`
+5. ensure a recycle category exists: reuse a category containing `回收`, or create `回收站`
+6. continuation-migrate the current thread into `服务器维护专用`
+7. rename the new continuation thread to `Discord/cc-connect 控制台`
+8. restart/report as needed for the migration flow, and send an install-complete report in the new control thread
+9. start `python3 bin/discord-watch.py --daemon` in the background
+10. optionally store logs/PID information under `state/watcher/`
 
 A later natural-language request such as "启动 watcher" or "后台运行 watcher" should still work the same way: re-check the environment, and if it matches, start the watcher in the background.
 

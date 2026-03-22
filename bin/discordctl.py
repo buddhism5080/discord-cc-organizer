@@ -5,6 +5,8 @@ import json
 import os
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -100,6 +102,9 @@ def write_claude_local_settings_env(updates, dry_run=False):
 
 
 DISCORD_API_BASE = configured_env_get("DISCORD_API_BASE", "https://discord.com/api/v10")
+DISCORD_API_TIMEOUT = float(configured_env_get("DISCORD_API_TIMEOUT", "20"))
+DISCORD_API_RETRY_COUNT = int(configured_env_get("DISCORD_API_RETRY_COUNT", "2"))
+DISCORD_API_RETRY_DELAY = float(configured_env_get("DISCORD_API_RETRY_DELAY", "1.5"))
 CC_CONNECT_CONFIG = Path(configured_env_get("CC_CONNECT_CONFIG", "~/.cc-connect/config.toml")).expanduser()
 CC_CONNECT_SESSIONS_DIR = Path(configured_env_get("CC_CONNECT_SESSIONS_DIR", "~/.cc-connect/sessions")).expanduser()
 SKILL_ROOT = Path(configured_env_get("DISCORD_SKILL_ROOT", str(REPO_ROOT))).expanduser()
@@ -161,6 +166,23 @@ def load_cc_token():
     return token
 
 
+def is_retryable_network_error(error):
+    reason = getattr(error, 'reason', error)
+    if isinstance(reason, TimeoutError):
+        return True
+    if isinstance(reason, socket.timeout):
+        return True
+    if isinstance(reason, ssl.SSLError):
+        text = str(reason).lower()
+        return 'timed out' in text or 'handshake' in text or 'eof occurred' in text
+    if isinstance(reason, OSError):
+        text = str(reason).lower()
+        return 'timed out' in text or 'temporary failure' in text or 'handshake' in text
+    text = str(reason).lower()
+    return 'timed out' in text or 'handshake' in text
+
+
+
 def api_request(method, path, token, payload=None):
     url = DISCORD_API_BASE.rstrip("/") + path
     headers = {
@@ -171,20 +193,31 @@ def api_request(method, path, token, payload=None):
     data = None
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method=method, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            body = resp.read().decode("utf-8")
-            return json.loads(body) if body else None
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
+    last_error = None
+    attempts = max(1, DISCORD_API_RETRY_COUNT + 1)
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError:
-            parsed = {"message": body}
-        raise DiscordSkillError(f"Discord API {method} {path} failed: HTTP {e.code}: {parsed}") from e
-    except urllib.error.URLError as e:
-        raise DiscordSkillError(f"Discord API request failed: {e}") from e
+            with urllib.request.urlopen(req, timeout=DISCORD_API_TIMEOUT) as resp:
+                body = resp.read().decode("utf-8")
+                return json.loads(body) if body else None
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError:
+                parsed = {"message": body}
+            raise DiscordSkillError(f"Discord API {method} {path} failed: HTTP {e.code}: {parsed}") from e
+        except urllib.error.URLError as e:
+            last_error = e
+            if attempt >= attempts or not is_retryable_network_error(e):
+                break
+            time.sleep(DISCORD_API_RETRY_DELAY)
+    reason = getattr(last_error, 'reason', last_error)
+    raise DiscordSkillError(
+        f"Discord API request failed after {attempts} attempt(s): {reason} "
+        f"(timeout={DISCORD_API_TIMEOUT}s, retries={DISCORD_API_RETRY_COUNT})"
+    ) from last_error
 
 
 def get_channel(channel_id, token):
@@ -994,28 +1027,38 @@ REQUIRED_PERMISSION_BITS = {
 
 
 def cmd_permissions_check(args):
-    token = load_cc_token()
-    ctx = context_for_target(args.channel_id, token)
-    guild_id = ctx['channel']['guild_id']
-    if not guild_id:
-        raise DiscordSkillError('Could not infer guild_id from current Discord context')
-    me = get_current_user(token)
-    member = get_guild_member(guild_id, me.get('id'), token)
-    permissions_value = guild_member_permissions(member, guild_id, token)
-    missing = [name for name, bit in REQUIRED_PERMISSION_BITS.items() if not (permissions_value & bit)]
-    oauth_permissions = sum(REQUIRED_PERMISSION_BITS.values())
     result = {
         'action': 'permissions-check',
-        'guild_id': guild_id,
-        'bot_user_id': me.get('id'),
-        'permissions_value': str(permissions_value),
         'required_permissions': list(REQUIRED_PERMISSION_BITS.keys()),
-        'missing_permissions': missing,
-        'ok': not missing,
         'oauth_scopes': ['bot', 'applications.commands'],
-        'oauth_permissions': str(oauth_permissions),
-        'message': 'permissions ok' if not missing else f'missing {len(missing)} permission(s)',
+        'oauth_permissions': str(sum(REQUIRED_PERMISSION_BITS.values())),
     }
+    try:
+        token = load_cc_token()
+        ctx = context_for_target(args.channel_id, token)
+        guild_id = ctx['channel']['guild_id']
+        if not guild_id:
+            raise DiscordSkillError('Could not infer guild_id from current Discord context')
+        me = get_current_user(token)
+        member = get_guild_member(guild_id, me.get('id'), token)
+        permissions_value = guild_member_permissions(member, guild_id, token)
+        missing = [name for name, bit in REQUIRED_PERMISSION_BITS.items() if not (permissions_value & bit)]
+        result.update({
+            'guild_id': guild_id,
+            'bot_user_id': me.get('id'),
+            'permissions_value': str(permissions_value),
+            'missing_permissions': missing,
+            'ok': not missing,
+            'error_type': None,
+            'message': 'permissions ok' if not missing else f'missing {len(missing)} permission(s)',
+        })
+    except DiscordSkillError as e:
+        result.update({
+            'ok': False,
+            'missing_permissions': [],
+            'error_type': 'connectivity',
+            'message': str(e),
+        })
     print_result(result, args.json)
 
 
@@ -1675,15 +1718,34 @@ def cmd_install(args):
     resolved_config = collect_install_config(install_dir=install_dir)
     token, token_source = resolve_discord_token_with_source()
     secret_sources = detect_secret_sources(token_source=token_source)
+    oauth_permissions = str(sum(REQUIRED_PERMISSION_BITS.values()))
 
-    ctx = context_for_target(args.channel_id, token)
-    guild_id = ctx['channel']['guild_id']
-    if not guild_id:
-        raise DiscordSkillError('Could not infer guild_id from current Discord context')
+    try:
+        ctx = context_for_target(args.channel_id, token)
+        guild_id = ctx['channel']['guild_id']
+        if not guild_id:
+            raise DiscordSkillError('Could not infer guild_id from current Discord context')
+        me = get_current_user(token)
+        member = get_guild_member(guild_id, me.get('id'), token)
+        permissions_value = guild_member_permissions(member, guild_id, token)
+    except DiscordSkillError as e:
+        result = {
+            'action': 'install',
+            'dry_run': args.dry_run,
+            'environment': env_info,
+            'config_mode': 'current environment / Claude local settings env (install persists selected DISCORD_* settings)',
+            'resolved_config': resolved_config,
+            'secret_sources': secret_sources,
+            'permissions_ok': False,
+            'missing_permissions': [],
+            'error_type': 'connectivity',
+            'oauth_scopes': ['bot', 'applications.commands'],
+            'oauth_permissions': oauth_permissions,
+            'message': f'Could not validate Discord permissions because Discord API validation failed: {e}',
+        }
+        print_result(result, args.json)
+        return
 
-    me = get_current_user(token)
-    member = get_guild_member(guild_id, me.get('id'), token)
-    permissions_value = guild_member_permissions(member, guild_id, token)
     missing = [name for name, bit in REQUIRED_PERMISSION_BITS.items() if not (permissions_value & bit)]
     if missing:
         result = {
@@ -1695,8 +1757,9 @@ def cmd_install(args):
             'secret_sources': secret_sources,
             'permissions_ok': False,
             'missing_permissions': missing,
+            'error_type': None,
             'oauth_scopes': ['bot', 'applications.commands'],
-            'oauth_permissions': str(sum(REQUIRED_PERMISSION_BITS.values())),
+            'oauth_permissions': oauth_permissions,
             'message': 'Bot permissions are insufficient; re-authorize before continuing',
         }
         print_result(result, args.json)
@@ -1717,13 +1780,39 @@ def cmd_install(args):
     if not args.dry_run:
         write_claude_local_settings_env(persisted_env, dry_run=False)
 
+    maintenance = None
+    recycle = None
+    general_entry = None
+    migration_result = None
+    watcher_started = False
+
+    if llm_pending:
+        result = {
+            'action': 'install',
+            'dry_run': args.dry_run,
+            'environment': env_info,
+            'config_mode': 'current environment / Claude local settings env (install persists selected DISCORD_* settings)',
+            'install_copy': install_copy,
+            'resolved_config': resolved_config,
+            'persisted_env_keys': sorted(persisted_env.keys()),
+            'secret_sources': secret_sources,
+            'permissions_ok': True,
+            'maintenance_channel': maintenance,
+            'general_entry_channel': general_entry,
+            'recycle_category': recycle,
+            'llm_pending': llm_pending,
+            'migration_result': migration_result,
+            'watcher_started': watcher_started,
+            'message': 'install prerequisites captured; LLM confirmation still pending',
+        }
+        print_result(result, args.json)
+        return
+
     structure = ensure_default_server_structure(guild_id, token, dry_run=args.dry_run)
     maintenance = structure['maintenance_channel']
     recycle = structure['recycle_category']
     general_entry = structure['general_entry_channel']
 
-    migration_result = None
-    watcher_started = False
     watcher_cmd = ['python3', str(install_dir / 'bin' / 'discord-watch.py'), '--daemon']
     if not args.dry_run:
         migrate_mod = load_migrate_module(install_dir)
@@ -1752,7 +1841,7 @@ def cmd_install(args):
                 f"- 安装目录：{install_dir}\n"
                 f"- 配置来源：当前环境 / Claude local settings（仅持久化选定 DISCORD_* 配置）\n"
                 f"- watcher：准备后台启动\n"
-                f"- LLM 待确认字段：{', '.join(llm_pending) if llm_pending else '无'}"
+                f"- LLM 待确认字段：无"
             )
             send_message(new_thread_id, token, install_report)
         log_path = Path(resolved_config['DISCORD_SKILL_STATE_DIR']) / 'watcher' / 'watcher-install.log'
@@ -1779,7 +1868,7 @@ def cmd_install(args):
         'llm_pending': llm_pending,
         'migration_result': migration_result,
         'watcher_started': watcher_started,
-        'message': 'install flow completed' if not llm_pending else 'install flow completed; LLM confirmation still pending',
+        'message': 'install flow completed',
     }
     print_result(result, args.json)
 
