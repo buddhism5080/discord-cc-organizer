@@ -90,6 +90,14 @@ How to authorize:
 
 ## Quick start
 
+### One-line install instruction for Claude Code on Discord
+
+Send this message in a Discord thread bridged to Claude Code via cc-connect:
+
+```text
+Please install this repository for the current Discord server by following https://github.com/buddhism5080/discord-cc-organizer/blob/main/AGENTS.md
+```
+
 ### Inspect current context
 
 ```bash

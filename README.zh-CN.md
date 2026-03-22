@@ -93,6 +93,14 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot%20applicati
 
 ## 快速开始
 
+### 可直接发给 Discord 中 Claude Code 的一句安装指令
+
+在通过 cc-connect 连接到 Claude Code 的 Discord thread 中直接发送这句话：
+
+```text
+请按照 https://github.com/buddhism5080/discord-cc-organizer/blob/main/AGENTS.md 为当前 Discord server 安装这个仓库
+```
+
 ### 查看当前上下文
 
 ```bash
