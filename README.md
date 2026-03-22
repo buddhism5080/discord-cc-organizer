@@ -1,3 +1,5 @@
+English | [简体中文](./README.zh-CN.md)
+
 # discord-cc-organizer
 
 `discord-cc-organizer` is a Python-based Discord management toolkit for thread-heavy workflows.
@@ -13,6 +15,7 @@ It was originally built around a Claude Code + cc-connect setup, then extracted 
 - Apply organize plans by creating structure and migrating threads
 - Continue a live conversation into a new Discord thread while preserving session mapping
 - Watch cc-connect session stores and auto-title new Discord sessions
+- When a Discord thread is deleted, automatically clean related local cc-connect / Claude session garbage
 - Clean up stale/old channels and empty categories after organize runs
 
 ## Repository layout
@@ -49,6 +52,41 @@ Continuation migration orchestrator that moves an active Claude/cc-connect sessi
 - Python 3.11+
 - A Discord bot token with the required channel/thread permissions
 - A compatible `cc-connect` session-store workflow if you want watcher/migration features
+
+## Discord bot permissions
+
+Before installation or runtime setup, the bot should have at least these server permissions:
+
+- View Channels
+- Manage Channels
+- Send Messages
+- Read Message History
+- Create Public Threads
+- Send Messages in Threads
+- Manage Threads
+
+Recommended OAuth2 scopes:
+
+- `bot`
+- `applications.commands`
+
+Recommended permission bitfield for invite/authorization:
+
+- `395137059856`
+
+Example authorization URL template:
+
+```text
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot%20applications.commands&permissions=395137059856
+```
+
+How to authorize:
+
+1. Open the Discord Developer Portal
+2. Find your application and bot
+3. Use OAuth2 URL generation with scopes `bot` and `applications.commands`
+4. Grant the permissions above to the target server
+5. Re-run installation after the bot has joined with the required permissions
 
 ## Quick start
 
@@ -99,9 +137,16 @@ If an agent is installing this repository, use:
 That file tells an agent to:
 
 - verify that the current environment is really Discord + cc-connect + Claude Code
+- automatically check whether the bot already has the required Discord server permissions
+- if permissions are missing, stop and tell the user how to authorize the bot before continuing
 - refuse installation outside that workflow
 - auto-fill all detectable local settings
 - ask the user only for AI endpoint / key / model confirmation
+- after a successful install in a matching environment, automatically reuse-or-create the default structure: an existing top-level `维护`/`入口` channel or `服务器维护专用`, plus an existing `回收` category or `回收站`
+- continuation-migrate the current thread into `服务器维护专用` and rename it to `Discord/cc-connect 控制台`
+- align cleanup protection with that default structure: protect names containing `回收`, `维护`, or `入口`, including the `回收站` category and its children plus the top-level `服务器维护专用` channel
+- auto-start the watcher after that
+- also allow the watcher to be started later from a natural-language user request
 
 ## Additional docs
 

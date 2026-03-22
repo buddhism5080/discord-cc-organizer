@@ -158,6 +158,14 @@ def list_guild_channels(guild_id, token):
     return api_request("GET", f"/guilds/{guild_id}/channels", token)
 
 
+def get_current_user(token):
+    return api_request("GET", "/users/@me", token)
+
+
+def get_guild_member(guild_id, user_id, token):
+    return api_request("GET", f"/guilds/{guild_id}/members/{user_id}", token)
+
+
 def list_active_guild_threads(guild_id, token):
     data = api_request("GET", f"/guilds/{guild_id}/threads/active", token)
     if isinstance(data, dict):
@@ -846,6 +854,43 @@ def cmd_snapshot(args):
     print_result(result, args.json)
 
 
+REQUIRED_PERMISSION_BITS = {
+    'View Channels': 1 << 10,
+    'Manage Channels': 1 << 4,
+    'Send Messages': 1 << 11,
+    'Read Message History': 1 << 16,
+    'Create Public Threads': 1 << 35,
+    'Send Messages in Threads': 1 << 38,
+    'Manage Threads': 1 << 34,
+}
+
+
+def cmd_permissions_check(args):
+    token = load_cc_token()
+    ctx = context_for_target(args.channel_id, token)
+    guild_id = ctx['channel']['guild_id']
+    if not guild_id:
+        raise DiscordSkillError('Could not infer guild_id from current Discord context')
+    me = get_current_user(token)
+    member = get_guild_member(guild_id, me.get('id'), token)
+    permissions_value = int(member.get('permissions') or 0)
+    missing = [name for name, bit in REQUIRED_PERMISSION_BITS.items() if not (permissions_value & bit)]
+    oauth_permissions = sum(REQUIRED_PERMISSION_BITS.values())
+    result = {
+        'action': 'permissions-check',
+        'guild_id': guild_id,
+        'bot_user_id': me.get('id'),
+        'permissions_value': str(permissions_value),
+        'required_permissions': list(REQUIRED_PERMISSION_BITS.keys()),
+        'missing_permissions': missing,
+        'ok': not missing,
+        'oauth_scopes': ['bot', 'applications.commands'],
+        'oauth_permissions': str(oauth_permissions),
+        'message': 'permissions ok' if not missing else f'missing {len(missing)} permission(s)',
+    }
+    print_result(result, args.json)
+
+
 def infer_cluster(descriptor):
     text = ((descriptor.get('normalized_title') or '') + ' ' + (descriptor.get('micro_summary') or '')).lower()
     rules = [
@@ -895,6 +940,53 @@ def ensure_category(guild_id, token, name, dry_run=False):
     return summarize_channel(created)
 
 
+def ensure_text_channel(guild_id, token, name, parent_id=None, dry_run=False):
+    channels = [summarize_channel(ch) for ch in list_guild_channels(guild_id, token)]
+    for ch in channels:
+        if ch['type_name'] == 'text' and (ch['name'] or '').lower() == name.lower() and ch.get('parent_id') == parent_id:
+            return ch
+    if dry_run:
+        return {'id': 'dry-run-text-id', 'name': clean_title(name), 'type_name': 'text', 'parent_id': parent_id}
+    payload = {'name': clean_title(name), 'type': CREATE_TYPES['text']}
+    if parent_id:
+        payload['parent_id'] = parent_id
+    created = create_channel(guild_id, token, payload)
+    return summarize_channel(created)
+
+
+def ensure_default_server_structure(guild_id, token, dry_run=False, entry_channel_name='服务器维护专用', recycle_category_name='回收站'):
+    channels = [summarize_channel(ch) for ch in list_guild_channels(guild_id, token)]
+
+    entry = next(
+        (
+            ch for ch in channels
+            if ch['type_name'] == 'text'
+            and not ch.get('parent_id')
+            and any(word in (ch.get('name') or '') for word in ('维护', '入口'))
+        ),
+        None,
+    )
+    if entry is None:
+        entry = ensure_text_channel(guild_id, token, entry_channel_name, parent_id=None, dry_run=dry_run)
+
+    recycle = next(
+        (
+            ch for ch in channels
+            if ch['type_name'] == 'category'
+            and '回收' in (ch.get('name') or '')
+        ),
+        None,
+    )
+    if recycle is None:
+        recycle = ensure_category(guild_id, token, recycle_category_name, dry_run=dry_run)
+
+    return {
+        'entry_channel': entry,
+        'recycle_category': recycle,
+        'dry_run': dry_run,
+    }
+
+
 def old_parent_cleanup_name(channel_name, batch_label, index):
     base = clean_title(channel_name or '旧频道')
     return clean_title(f"{batch_label}-{index:02d}-{base}")
@@ -939,7 +1031,7 @@ def inspect_parent_retention(channel_id, token, active_threads=None):
     return result
 
 
-def cleanup_global_structure(guild_id, token, dry_run=False, graveyard_category_name='垃圾场'):
+def cleanup_global_structure(guild_id, token, dry_run=False, graveyard_category_name='回收站'):
     batch_label = time.strftime('%Y%m%d')
     cleaned = {
         'deleted': [],
@@ -951,9 +1043,10 @@ def cleanup_global_structure(guild_id, token, dry_run=False, graveyard_category_
     channels = [summarize_channel(ch) for ch in list_guild_channels(guild_id, token)]
     active_threads = list_active_guild_threads(guild_id, token)
     categories = [c for c in channels if c['type_name'] == 'category']
+    protected_keywords = ('回收', '维护', '入口')
     protected_category_ids = {
         c['id'] for c in categories
-        if any(word in (c.get('name') or '') for word in ('垃圾', '入口'))
+        if any(word in (c.get('name') or '') for word in protected_keywords)
     }
     graveyard = next((c for c in categories if (c.get('name') or '').lower() == graveyard_category_name.lower()), None)
     parking_index = 1
@@ -968,6 +1061,14 @@ def cleanup_global_structure(guild_id, token, dry_run=False, graveyard_category_
                 'channel_name': ch.get('name'),
                 'channel_type': ch.get('type_name'),
                 'reason': 'protected-category',
+            })
+            continue
+        if not ch.get('parent_id') and any(word in (ch.get('name') or '') for word in protected_keywords):
+            cleaned['skipped'].append({
+                'channel_id': ch.get('id'),
+                'channel_name': ch.get('name'),
+                'channel_type': ch.get('type_name'),
+                'reason': 'protected-top-level-channel',
             })
             continue
         status = inspect_parent_retention(ch['id'], token, active_threads=active_threads)
@@ -1641,6 +1742,11 @@ def build_parser():
     snapshot.add_argument("--channel-id")
     snapshot.add_argument("--json", action="store_true")
     snapshot.set_defaults(func=cmd_snapshot)
+
+    permissions_check = sub.add_parser("permissions-check")
+    permissions_check.add_argument("--channel-id")
+    permissions_check.add_argument("--json", action="store_true")
+    permissions_check.set_defaults(func=cmd_permissions_check)
 
     structure = sub.add_parser("structure")
     structure.add_argument("--channel-id")
