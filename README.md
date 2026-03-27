@@ -103,6 +103,14 @@ Please install this repository for the current Discord server by following https
 python3 bin/discordctl.py info --json
 ```
 
+### AI-rename the current thread explicitly
+
+```bash
+python3 bin/discordctl.py rename-current-ai --json
+```
+
+This command explicitly renames the current Discord thread from its content. It is separate from the watcher, which only auto-renames newly discovered Discord sessions.
+
 ### Create an organize plan
 
 ```bash

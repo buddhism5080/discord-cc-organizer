@@ -128,6 +128,7 @@ CHANNEL_TYPES = {
 }
 CREATE_TYPES = {"text": 0, "category": 4, "forum": 15}
 GENERIC_TITLE = "新会话"
+TITLE_CONTEXT_MAX_CHARS = 10000
 REASONING_CONTENT_RE = re.compile(r'"reasoning_content"\s*:\s*"(?:\\.|[^"\\])*"', re.DOTALL)
 
 
@@ -418,6 +419,26 @@ def strip_prompt_noise(text):
     return text
 
 
+def collect_title_context_from_history(history, max_chars=TITLE_CONTEXT_MAX_CHARS):
+    parts = []
+    total = 0
+    for item in history:
+        if not isinstance(item, dict) or item.get("role") != "user":
+            continue
+        content = strip_prompt_noise(item.get("content") or "")
+        if not content:
+            continue
+        addition = content if not parts else "\n\n" + content
+        next_total = total + len(addition)
+        if parts and next_total > max_chars:
+            break
+        parts.append(content)
+        total = next_total
+        if len(parts) == 1 and total > max_chars:
+            break
+    return "\n\n".join(parts)
+
+
 def openai_config():
     base_url = configured_env_get("DISCORD_SKILL_LLM_BASE_URL") or configured_env_get("OPENAI_BASE_URL")
     api_key = configured_env_get("DISCORD_SKILL_LLM_API_KEY") or configured_env_get("OPENAI_API_KEY")
@@ -445,7 +466,7 @@ def llm_title(prompt):
         "temperature": 0.2,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt[:6000]},
+            {"role": "user", "content": prompt},
         ],
     }
     url = config["base_url"] + "/chat/completions"
@@ -595,6 +616,45 @@ def find_cc_session_record(session_key):
             'session': session if isinstance(session, dict) else {},
         }
     return None
+
+
+def find_cc_session_record_by_thread_id(thread_id):
+    current_key = current_session_key()
+    if current_key.startswith(f'discord:{thread_id}'):
+        record = find_cc_session_record(current_key)
+        if record:
+            return record
+    for path in session_store_files():
+        try:
+            with path.open('r', encoding='utf-8') as f:
+                store = json.load(f)
+        except Exception:
+            continue
+        active = store.get('active_session') or {}
+        for session_key, cc_session_id in active.items():
+            if not isinstance(session_key, str) or not session_key.startswith('discord:'):
+                continue
+            try:
+                if thread_id_from_session_key(session_key) != str(thread_id):
+                    continue
+            except DiscordSkillError:
+                continue
+            session = (store.get('sessions') or {}).get(cc_session_id)
+            project_name = path.stem.rsplit('_', 1)[0]
+            return {
+                'store_path': str(path),
+                'project_name': project_name,
+                'cc_session_id': cc_session_id,
+                'session': session if isinstance(session, dict) else {},
+            }
+    return None
+
+
+def title_context_for_thread(thread_id, fallback=''):
+    record = find_cc_session_record_by_thread_id(thread_id) or {}
+    history = (record.get('session') or {}).get('history') or []
+    context = collect_title_context_from_history(history)
+    return context or fallback
 
 
 def release_lock(lock_path):
@@ -860,6 +920,28 @@ def cmd_rename(args):
     }
     if not args.dry_run:
         patch_channel(channel["id"], token, payload)
+    print_result(result, args.json)
+
+
+def cmd_rename_current_ai(args):
+    token = load_cc_token()
+    ctx = context_for_target(args.channel_id, token)
+    channel = ctx["channel"]
+    if channel["type_name"] not in THREAD_TYPES.values():
+        raise DiscordSkillError("AI rename is only supported for Discord threads")
+    source_text = title_context_for_thread(channel["id"], fallback=channel.get("name") or "")
+    new_name, source = suggest_title(source_text)
+    result = {
+        "action": "rename-current-ai",
+        "dry_run": args.dry_run,
+        "target_id": channel["id"],
+        "target_name": channel.get("name"),
+        "new_name": new_name,
+        "source": source,
+        "message": f"rename {channel.get('name')} -> {new_name}",
+    }
+    if not args.dry_run:
+        patch_channel(channel["id"], token, {"name": new_name})
     print_result(result, args.json)
 
 
@@ -1353,7 +1435,7 @@ def cmd_organize_plan(args):
         last_meta = latest_channel_message_meta(thread_id, token)
         last_ts = last_meta.get('timestamp')
         descriptor = get_thread_descriptor(thread_id)
-        seed_text = ' '.join(item.get('content','') for item in history if isinstance(item, dict) and item.get('role') == 'user') or (t.get('name') or '')
+        seed_text = collect_title_context_from_history(history) or (t.get('name') or '')
         if descriptor and descriptor.get('last_message_ts') == last_ts:
             normalized_title = descriptor.get('normalized_title') or t.get('name')
             micro_summary = descriptor.get('micro_summary') or ''
@@ -2020,111 +2102,6 @@ def cmd_organize_execute(args):
     print_result(result, args.json)
 
 
-def auto_rename_result(**kwargs):
-    base = {
-        "action": "auto-rename-hook",
-        "continue": True,
-        "suppressOutput": True,
-    }
-    base.update(kwargs)
-    return base
-
-
-def cmd_auto_rename_hook(args):
-    hook_input = {}
-    if not sys.stdin.isatty():
-        raw = sys.stdin.read().strip()
-        if raw:
-            try:
-                hook_input = json.loads(raw)
-            except json.JSONDecodeError:
-                hook_input = {}
-
-    session_key = current_session_key()
-    if args.reset:
-        reset_state(session_key)
-
-    if not session_key.startswith("discord:"):
-        if args.json:
-            print(json_dumps(auto_rename_result(message="Not a Discord session")))
-        return
-
-    lock_path = acquire_lock(session_key)
-    if lock_path is None:
-        if args.json:
-            print(json_dumps(auto_rename_result(message="Another auto-rename is already running")))
-        return
-
-    try:
-        token = load_cc_token()
-        ctx = context_for_target(None, token)
-        channel = ctx["channel"]
-        if channel["type_name"] not in THREAD_TYPES.values():
-            if args.json:
-                print(json_dumps(auto_rename_result(message="Current target is not a thread")))
-            return
-
-        state, path = load_state(session_key)
-        if state.get("done"):
-            if args.json:
-                print(json_dumps(auto_rename_result(message="Already auto-renamed")))
-            return
-
-        user_prompt = hook_input.get("user_prompt", "")
-        if not user_prompt.strip():
-            if args.json:
-                print(json_dumps(auto_rename_result(message="Missing user prompt")))
-            return
-
-        current_name = channel.get("name") or ""
-        expected_existing = sanitize_existing_thread_name(user_prompt)
-        if expected_existing and current_name != expected_existing:
-            if current_name == GENERIC_TITLE:
-                expected_existing = current_name
-            else:
-                save_state(path, {
-                    "done": True,
-                    "reason": "current-name-changed",
-                    "current_name": current_name,
-                    "expected_existing": expected_existing,
-                    "updated_at": int(time.time()),
-                })
-                if args.json:
-                    print(json_dumps(auto_rename_result(message="Thread name already changed; not auto-renaming")))
-                return
-
-        title, source = suggest_title(user_prompt)
-        if not title:
-            title = GENERIC_TITLE
-        if title == current_name:
-            save_state(path, {
-                "done": True,
-                "reason": "generated-same-as-current",
-                "current_name": current_name,
-                "updated_at": int(time.time()),
-            })
-            if args.json:
-                print(json_dumps(auto_rename_result(message="Generated title matches current name")))
-            return
-
-        result = {
-            "done": True,
-            "source": source,
-            "old_name": current_name,
-            "new_name": title,
-            "expected_existing": expected_existing,
-            "updated_at": int(time.time()),
-        }
-        if not args.dry_run:
-            patch_channel(channel["id"], token, {"name": title})
-        save_state(path, result)
-        if args.json:
-            payload = auto_rename_result(message=f"Renamed thread to {title}", new_name=title, source=source, dry_run=args.dry_run)
-            print(json_dumps(payload))
-    finally:
-        release_lock(lock_path)
-
-
 def build_parser():
     parser = argparse.ArgumentParser(description="Discord skill backend for cc-connect sessions")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2151,6 +2128,12 @@ def build_parser():
     rename.add_argument("--dry-run", action="store_true")
     rename.add_argument("--json", action="store_true")
     rename.set_defaults(func=cmd_rename)
+
+    rename_current_ai = sub.add_parser("rename-current-ai")
+    rename_current_ai.add_argument("--channel-id")
+    rename_current_ai.add_argument("--dry-run", action="store_true")
+    rename_current_ai.add_argument("--json", action="store_true")
+    rename_current_ai.set_defaults(func=cmd_rename_current_ai)
 
     archive = sub.add_parser("archive")
     archive.add_argument("--channel-id")
@@ -2237,12 +2220,6 @@ def build_parser():
     organize_execute.add_argument("--json", action="store_true")
     organize_execute.set_defaults(func=cmd_organize_execute)
 
-    auto = sub.add_parser("auto-rename-hook")
-    auto.add_argument("--dry-run", action="store_true")
-    auto.add_argument("--reset", action="store_true")
-    auto.add_argument("--json", action="store_true")
-    auto.set_defaults(func=cmd_auto_rename_hook)
-
     return parser
 
 
@@ -2252,10 +2229,6 @@ def main():
     try:
         args.func(args)
     except DiscordSkillError as e:
-        if getattr(args, "command", None) == "auto-rename-hook":
-            if getattr(args, "json", False):
-                print(json_dumps(auto_rename_result(message=str(e))))
-            return 0
         print(str(e), file=sys.stderr)
         return 2
     except KeyboardInterrupt:

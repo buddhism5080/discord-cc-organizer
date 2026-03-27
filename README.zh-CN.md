@@ -106,6 +106,14 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot%20applicati
 python3 bin/discordctl.py info --json
 ```
 
+### 显式用 AI 重命名当前 thread
+
+```bash
+python3 bin/discordctl.py rename-current-ai --json
+```
+
+这个命令会基于当前 Discord thread 的内容显式执行一次 AI 重命名。它和 watcher 分开；watcher 只会自动处理新发现的 Discord session。
+
 ### 生成 organize 计划
 
 ```bash

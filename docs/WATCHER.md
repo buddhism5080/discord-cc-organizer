@@ -27,6 +27,12 @@ python3 bin/discord-watch.py --dry-run
 7. 每小时用 Discord API 低频校验这些 thread 是否还真实存在
 8. 如果 thread 已消失，则清理对应的 Claude / cc-connect 本地数据。Claude transcript 的定位依赖 `CLAUDE_PROJECTS_DIR` 中的 `agent_session_id` 搜索。
 
+显式为当前 thread 执行 AI 重命名不走 watcher，而是单独使用：
+
+```bash
+python3 bin/discordctl.py rename-current-ai --json
+```
+
 ## 依赖的 AI 配置
 
 可通过环境变量提供：

@@ -1,24 +1,38 @@
 ---
 name: discord
-description: Claude Code skill reference for the standalone discord-cc-organizer repository.
+description: Use when working with the standalone discord-cc-organizer repository in a Discord plus cc-connect plus Claude Code workflow, especially for explicit current-thread AI renaming, watcher setup, or continuation migration.
 ---
 
-# Claude Code skill note
+# discord-cc-organizer
 
-This repository started as a Claude Code skill.
+## Quick commands
 
-The original in-product `SKILL.md` was highly tied to a private local environment and absolute file paths, so the public repository keeps only this short note.
+### Explicitly AI-rename the current Discord thread
 
-For actual usage and setup, see:
+When the user asks to rename the current Discord thread based on its content, run:
+
+```bash
+python3 bin/discordctl.py rename-current-ai --json
+```
+
+This command is explicit/manual. It is separate from watcher-based auto-titling for newly discovered threads.
+
+### Inspect current Discord context
+
+```bash
+python3 bin/discordctl.py info --json
+```
+
+### Start the watcher manually
+
+```bash
+python3 bin/discord-watch.py --daemon
+```
+
+### Continue using repo docs
+
+See:
 
 - `README.md`
 - `docs/WATCHER.md`
 - `docs/CONTINUATION_MIGRATE.md`
-
-If you want to rebuild a Claude Code skill on top of this repository, point your skill implementation to:
-
-- `bin/discordctl.py`
-- `bin/discord-watch.py`
-- `bin/discord-migrate.py`
-
-and adapt the prompts/commands to your own environment.
